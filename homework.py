@@ -5,7 +5,9 @@ import requests
 import telegram
 from dotenv import load_dotenv
 import logging
-from classes_to_except import NonCritical, CriticalErrors
+from classes_to_except import NonCritical, CriticalErrors, KeyNotFoundError
+from telegram.error import RetryAfter, TimedOut
+
 
 load_dotenv()
 
@@ -38,7 +40,7 @@ def send_message(bot, message):
     """Отправка сообщения."""
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
-    except TypeError:
+    except (RetryAfter, TimedOut):
         logger.error('Сообщение не удалось послать!')
     else:
         logger.info('Сообщение успешно отправлено!')
@@ -52,7 +54,7 @@ def get_api_answer(current_timestamp):
         homework_statuses = requests.get(
             ENDPOINT, headers=HEADERS, params=params
         )
-    except Exception:
+    except requests.exceptions.MissingSchema:
         raise CriticalErrors('Ошибка доступа к эндпоинту!')
     else:
         if homework_statuses.status_code == 200:
@@ -65,25 +67,37 @@ def get_api_answer(current_timestamp):
 
 def check_response(response):
     """Проверка API на корректность."""
-    if type(response) == list:
+    global current_date
+    if isinstance(response, list):
         response = response[0]
+    # временная точка, которая на следующей итерации при отсутвии ошибок
+    # CriticalErrors будет передана в качестве аргумента функции get_api_answer
+    current_date = response.get('current_date')
     if 'homeworks' in response:
-        if type(response.get('homeworks')) != list:
-            raise CriticalErrors('Неизвестное форматирование ответа!')
-        if len(response.get('homeworks')) == 0:
+        homeworks_info = response.get('homeworks')
+        if not homeworks_info:
             raise NonCritical('Домашка без изменений!')
-        return response.get('homeworks')
+        if isinstance(homeworks_info, list):
+            return homeworks_info
+        else:
+            raise CriticalErrors('Неизвестный формат ответа!')
     else:
-        raise CriticalErrors('Нет homeworks в ключах ответа!')
+        raise KeyNotFoundError('Нет homeworks в ключах ответа!')
 
 
 def parse_status(homework):
     """Извлечение статуса из информации о домашнем задании."""
-    if type(homework) == list:
-        homework = homework[0]
+    # условие при котором homework приходит в виде списка с одним элементом
+    # условие при котором response приходит в виде списка с одним элементом
     homework_name = homework.get('homework_name')
+    if homework_name is None:
+        raise KeyNotFoundError('Ответ не содержит названия ДЗ!')
     homework_status = homework.get('status')
-    verdict = HOMEWORK_STATUSES[homework_status]
+    if homework_status is None:
+        raise KeyNotFoundError('Ответ не содержит статуса ДЗ!')
+    verdict = HOMEWORK_STATUSES.get(homework_status)
+    if verdict is None:
+        raise KeyNotFoundError('Недокументированный статус ответа!')
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
@@ -103,7 +117,9 @@ def check_tokens():
 def main():
     """Основная логика работы бота."""
     if not check_tokens():
-        return
+        return sys.exit(
+            'Программа закончила свою работу. Нет переменных окружения!'
+        )
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     current_timestamp = int(time.time())
     list_errors_occurred = []
@@ -111,10 +127,21 @@ def main():
         try:
             response = get_api_answer(current_timestamp)
             homework = check_response(response)
-            message = parse_status(homework)
+            message = parse_status(homework[0])
+
+        # при отсутствии изменений в ДЗ функция get_api_answer будет вызвана с
+        # временной точки, равной ключу current_date
+        # API ответа прошлой итерации
         except NonCritical as debug:
+            current_timestamp = current_date
             logger.debug(debug)
-        except CriticalErrors as error:
+
+        # если происходит ошибка CriticalErrors, то на следующей итерации
+        # передаем функции get_api_answer в качестве аргумента временную
+        # точку, когда в последний раз был получен валидный ответ или
+        # точку начала работы программы в случае. если с начала ее работы
+        # не приходило валидных ответов.
+        except (CriticalErrors, KeyNotFoundError) as error:
             logger.error(error)
             list_errors_occurred.append(str(error))
             list_last_index = len(list_errors_occurred) - 1
@@ -125,12 +152,18 @@ def main():
                     != list_errors_occurred[list_last_index - 1]
             ):
                 send_message(bot, str(error))
+
+        # при изменении состояния ДЗ get_api_answer будет вызвана с
+        # временной точки, равной ключу current_date
+        # API ответа прошлой итерации
         else:
+            if current_date:
+                current_timestamp = current_date
             send_message(bot, message)
         finally:
-            current_timestamp = int(time.time())
             time.sleep(RETRY_TIME)
 
 
 if __name__ == '__main__':
+    current_date = None
     main()

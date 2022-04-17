@@ -6,3 +6,8 @@ class NonCritical(Exception):
 class CriticalErrors(Exception):
     """Исключение обрабатывающее критические ошибки"""
     pass
+
+
+class KeyNotFoundError(KeyError):
+    """Исключение обрабатывающее ошибки связанные с отсутствием ключа"""
+    pass
