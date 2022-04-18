@@ -87,8 +87,6 @@ def check_response(response):
 
 def parse_status(homework):
     """Извлечение статуса из информации о домашнем задании."""
-    # условие при котором homework приходит в виде списка с одним элементом
-    # условие при котором response приходит в виде списка с одним элементом
     homework_name = homework.get('homework_name')
     if homework_name is None:
         raise KeyNotFoundError('Ответ не содержит названия ДЗ!')
